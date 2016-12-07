@@ -8,7 +8,7 @@ class ThesslstorePlugin extends Plugin {
     /**
      * @var string The version of this plugin
      */
-    private static $version = "1.0.0";
+    private static $version = "1.2.0";
     /**
      * @var string The authors of this plugin
      */
