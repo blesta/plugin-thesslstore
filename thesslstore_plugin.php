@@ -380,4 +380,3 @@ class ThesslstorePlugin extends Plugin {
         return $data;
     }
 }
-?>
