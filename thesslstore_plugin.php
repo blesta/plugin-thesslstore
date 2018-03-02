@@ -198,14 +198,18 @@ class ThesslstorePlugin extends Plugin {
 
         $order_query_resp = $api->order_query($order_query_request);
 
-       $sub_query_sql = "SELECT `service_id` FROM `service_fields` WHERE `key` = 'thesslstore_fqdn' GROUP BY `service_id`";
-
-       $services = $this->Record->select()->from("services")
+        $sub_query_record = clone $this->Record;
+        $sub_query = $sub_query_record->select('service_id')->from('service_fields')
+           ->where('service_fields.key', '=', 'thesslstore_fqdn')
+           ->group(array('service_fields.service_id'))
+           ->get();
+        $services = $this->Record->select()->from("services")->appendValues($sub_query_record->values)
            ->leftJoin("service_fields", "services.id", "=", "service_fields.service_id", false)
+           ->where("services.id", "notin", array($sub_query), false)
            ->where("service_fields.key", "=", "thesslstore_order_id")
-           ->where("services.status", "=", "active")
-           ->where("services.id", "notin", array($sub_query_sql), false)
-           ->fetchAll();
+           ->getStatement();
+
+        unset($sub_query_record);
 
         foreach($services as $service){
 
