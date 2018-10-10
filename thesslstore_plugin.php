@@ -194,6 +194,7 @@ class ThesslstorePlugin extends Plugin
     {
         Loader::loadModels($this, array('Services','ModuleManager'));
         Loader::loadHelpers($this, array('Date'));
+        $this->Date->setTimezone('UTC', 'UTC');
 
         $company_id = Configure::get("Blesta.company_id");
 
@@ -273,7 +274,7 @@ class ThesslstorePlugin extends Plugin
                         'UTC'
                     );
 
-                    if($end_date != $service_obj->date_renews){
+                    if ($end_date != $service_obj->date_renews) {
                         $vars['date_renews'] = $end_date . 'Z';
                         $this->Services->edit($service_obj->id, $vars, $bypass_module = true);
                     }
@@ -310,11 +311,19 @@ class ThesslstorePlugin extends Plugin
     private function certificateExpirationReminder()
     {
         Loader::loadModels($this, array('Clients', 'Emails', 'Services'));
-        Loader::loadHelpers($this, array('Html'));
+        Loader::loadHelpers($this, array('Date', 'Html'));
+        $this->Date->setTimezone('UTC', Configure::get('Blesta.company_timezone'));
 
-        $now = time();
-        $seconds_in_day = 86400;
+        $now = date('c');
         $notice_days = 30;
+        $filters = array(
+            'renew_start_date' => $this->Clients->dateToUtc(
+                $this->Date->modify($now, '+' . $notice_days . ' days', 'Y-m-d 00:00:00')
+            ),
+            'renew_end_date' => $this->Clients->dateToUtc(
+                $this->Date->modify($now, '+' . $notice_days . ' days', 'Y-m-d 23:59:59')
+            )
+        );
 
         // Get the company hostname
         $hostname = isset(Configure::get('Blesta.company')->hostname)
@@ -323,18 +332,12 @@ class ThesslstorePlugin extends Plugin
         $client_uri = $hostname . $this->getWebDirectory() . Configure::get('Route.client') . '/';
 
         // Fetch all SSL Store module active/suspended services
-        $services = $this->getAllServiceIds();
+        $services = $this->getAllServiceIds($filters);
 
         // Send the expiry notices
         foreach($services as $service) {
             // Fetch the service
-            if (!($service_obj = $this->Services->get($service->id)) || empty($service_obj->date_renews)) {
-                continue;
-            }
-
-            // Determine whether it's time to send the expiry notice email
-            $days_until_renewal = ((strtotime($service_obj->date_renews . 'Z') - $now) / $seconds_in_day);
-            if ((int)floor($days_until_renewal) !== $notice_days) {
+            if (!($service_obj = $this->Services->get($service->id))) {
                 continue;
             }
 
@@ -463,22 +466,34 @@ class ThesslstorePlugin extends Plugin
     /**
      * Retrieves a list of all service IDs representing active/suspended SSL Store module services for this company
      *
+     * @param array $filters An array of filter options including:
+     *  - renew_start_date The service's renew date to search from
+     *  - renew_end_date The service's renew date to search to
      * @return array A list of stdClass objects containing:
      *  - id The ID of the service
      */
-    private function getAllServiceIds()
+    private function getAllServiceIds(array $filters = array())
     {
         Loader::loadComponents($this, array('Record'));
 
-        return $this->Record->select(array('services.id'))
+        $this->Record->select(array('services.id'))
             ->from('services')
                 ->on('service_fields.key', '=', 'thesslstore_order_id')
             ->innerJoin('service_fields', 'service_fields.service_id', '=', 'services.id', false)
             ->innerJoin('clients', 'clients.id', '=', 'services.client_id', false)
             ->innerJoin('client_groups', 'client_groups.id', '=', 'clients.client_group_id', false)
             ->where('services.status', 'in', array('active', 'suspended'))
-            ->where('client_groups.company_id', '=', Configure::get('Blesta.company_id'))
-            ->group(array('services.id'))
+            ->where('client_groups.company_id', '=', Configure::get('Blesta.company_id'));
+
+        if (!empty($filters['renew_start_date'])) {
+            $this->Record->where('services.date_renews', '>=', $filters['renew_start_date']);
+        }
+
+        if (!empty($filters['renew_end_date'])) {
+            $this->Record->where('services.date_renews', '<=', $filters['renew_end_date']);
+        }
+
+        return $this->Record->group(array('services.id'))
             ->fetchAll();
     }
 
