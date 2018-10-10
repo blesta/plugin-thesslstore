@@ -193,6 +193,7 @@ class ThesslstorePlugin extends Plugin
    private function orderSynchronization()
     {
         Loader::loadModels($this, array('Services','ModuleManager'));
+        Loader::loadHelpers($this, array('Date'));
 
         $company_id = Configure::get("Blesta.company_id");
 
@@ -264,11 +265,16 @@ class ThesslstorePlugin extends Plugin
 
                 //update renewal date
                 if (!empty($order->CertificateEndDateInUTC)) {
-                    //convert date format to match with blesta
-                    $end_date = date("Y-m-d H:i:s", strtotime($order->CertificateEndDateInUTC));
-                    $end_date = date('Y-m-d H:i:s',strtotime($end_date. '-30 days')); //set 30 days earlier renewal date
+                    // Get the date 30 days before the certificate expires
+                    $end_date = $this->Date->modify(
+                        strtotime($order->CertificateEndDateInUTC),
+                        '-30 days',
+                        'Y-m-d H:i:s',
+                        'UTC'
+                    );
+
                     if($end_date != $service_obj->date_renews){
-                        $vars['date_renews'] = $end_date;
+                        $vars['date_renews'] = $end_date . 'Z';
                         $this->Services->edit($service_obj->id, $vars, $bypass_module = true);
                     }
                 }
