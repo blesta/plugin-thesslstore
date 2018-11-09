@@ -11,7 +11,6 @@ class ThesslstorePlugin extends Plugin
     {
         $this->loadConfig(dirname(__FILE__) . DS . 'config.json');
         Language::loadLang("thesslstore_plugin", null, dirname(__FILE__) . DS . "language" . DS);
-        require_once(COMPONENTDIR.'modules/thesslstore_module/api/thesslstoreApi.php');
     }
 
     /**
@@ -86,6 +85,11 @@ class ThesslstorePlugin extends Plugin
             if (version_compare($current_version, '1.2.2', '<')) {
                 $this->upgrade1_2_2();
             }
+
+            // Upgrade to 1.3.0
+            if (version_compare($current_version, '1.3.0', '<')) {
+                $this->upgrade1_3_0();
+            }
         }
     }
 
@@ -127,6 +131,33 @@ class ThesslstorePlugin extends Plugin
     }
 
     /**
+     * Upgrades to v1.3.0 of the plugin
+     * Removes service synchronization cron task that was moved to module
+     */
+    private function upgrade1_3_0()
+    {
+        Loader::loadModels($this, ['CronTasks']);
+
+        $cron_tasks = $this->getCronTasks();
+
+        // Remove the cron task
+        foreach ($cron_tasks as $task) {
+            $cron_task = $this->CronTasks->getByKey('tss_order_sync', 'thesslstore', 'plugin');
+            if ($cron_task) {
+                $this->CronTasks->deleteTask($cron_task->id, 'plugin', 'thesslstore');
+            }
+        }
+
+        // Remove individual cron task run
+        foreach ($cron_tasks as $task) {
+            $cron_task_run = $this->CronTasks->getTaskRunByKey('tss_order_sync', 'thesslstore', false, 'plugin');
+            if ($cron_task_run) {
+                $this->CronTasks->deleteTaskRun($cron_task_run->task_run_id);
+            }
+        }
+    }
+
+    /**
      * Performs any necessary cleanup actions
      *
      * @param int $plugin_id The ID of the plugin being uninstalled
@@ -159,18 +190,16 @@ class ThesslstorePlugin extends Plugin
         if ($last_instance) {
             // Remove the cron tasks
             foreach ($cron_tasks as $task) {
-                $cron_task = $this->CronTasks
-                    ->getByKey($task['key'], $task['plugin_dir']);
+                $cron_task = $this->CronTasks->getByKey($task['key'], $task['dir'], $task['task_type']);
                 if ($cron_task) {
-                    $this->CronTasks->delete($cron_task->id, $task['plugin_dir']);
+                    $this->CronTasks->deleteTask($cron_task->id, $task['task_type'], $task['dir']);
                 }
             }
         }
 
         // Remove individual cron task runs
         foreach ($cron_tasks as $task) {
-            $cron_task_run = $this->CronTasks
-                ->getTaskRunByKey($task['key'], $task['plugin_dir']);
+            $cron_task_run = $this->CronTasks->getTaskRunByKey($task['key'], $task['dir'], false, $task['task_type']);
             if ($cron_task_run) {
                 $this->CronTasks->deleteTaskRun($cron_task_run->task_run_id);
             }
@@ -179,129 +208,8 @@ class ThesslstorePlugin extends Plugin
 
     public function cron($key)
     {
-        if ($key == 'tss_order_sync') {
-            $this->orderSynchronization();
-        }
         if ($key == 'tss_expiration_reminder') {
             $this->certificateExpirationReminder();
-        }
-    }
-
-    /**
-     * Synchronization order data
-     */
-   private function orderSynchronization()
-    {
-        Loader::loadModels($this, array('Services','ModuleManager'));
-        Loader::loadHelpers($this, array('Date'));
-        $this->Date->setTimezone('UTC', 'UTC');
-
-        $company_id = Configure::get("Blesta.company_id");
-
-        $today_date = strtotime("now");
-        $today_date = $today_date * 1000; //convert into milliseconds
-        $two_month_before_date = strtotime("-2 Months");
-        $two_month_before_date = $two_month_before_date * 1000; //convert into milliseconds
-
-        //get module row id
-        $module_row_id = 0;
-        $api_partner_code = '';
-        $api_auth_token = '';
-        $api_mode = '';
-        $modules = $this->ModuleManager->getAll($company_id);
-        foreach($modules as $module){
-            $rows = $this->ModuleManager->getRows($module->id);
-            foreach($rows as $row){
-                if(isset($row->meta->thesslstore_reseller_name)) {
-                    $module_row_id = $row->id;
-                    $api_mode = $row->meta->api_mode;
-                    if($api_mode == 'TEST'){
-                        $api_partner_code = $row->meta->api_partner_code_test;
-                        $api_auth_token = $row->meta->api_auth_token_test;
-                    }
-                    elseif($api_mode == 'LIVE'){
-                        $api_partner_code = $row->meta->api_partner_code_live;
-                        $api_auth_token = $row->meta->api_auth_token_live;
-                    }
-                    break 2;
-                }
-            }
-        }
-
-        $api = new thesslstoreApi($api_partner_code, $api_auth_token, '', '', '', false, $api_mode);
-
-        $order_query_request = new order_query_request();
-        $order_query_request->StartDate = "/Date($two_month_before_date)/";
-        $order_query_request->EndDate = "/Date($today_date)/";
-
-        $order_query_resp = $api->order_query($order_query_request);
-
-        // Cannot continue without an order query
-        if (empty($order_query_resp) || !is_array($order_query_resp)) {
-            return;
-        }
-
-        // Fetch all SSL Store module active/suspended services to sync
-        $services = $this->getAllServiceIds();
-
-        // Sync the renew date and FQDN of all SSL Store services
-        foreach ($services as $service) {
-            // Fetch the service
-            if (!($service_obj = $this->Services->get($service->id))) {
-                continue;
-            }
-
-            $fields = $this->serviceFieldsToObject($service_obj->fields);
-
-            // Require the SSL Store order ID field be available
-            if (!isset($fields->thesslstore_order_id)) {
-                continue;
-            }
-
-            foreach ($order_query_resp as $order) {
-                // Skip orders that don't match the service field's order ID
-                if ($order->TheSSLStoreOrderID != $fields->thesslstore_order_id) {
-                    continue;
-                }
-
-                //update renewal date
-                if (!empty($order->CertificateEndDateInUTC)) {
-                    // Get the date 30 days before the certificate expires
-                    $end_date = $this->Date->modify(
-                        strtotime($order->CertificateEndDateInUTC),
-                        '-30 days',
-                        'Y-m-d H:i:s',
-                        'UTC'
-                    );
-
-                    if ($end_date != $service_obj->date_renews) {
-                        $vars['date_renews'] = $end_date . 'Z';
-                        $this->Services->edit($service_obj->id, $vars, $bypass_module = true);
-                    }
-                }
-
-                //update domain name(fqdn)
-                if (!empty($order->CommonName)) {
-                    if (isset($fields->thesslstore_fqdn)) {
-                        if ($fields->thesslstore_fqdn != $order->CommonName) {
-                            //update
-                            $this->Services->editField($service_obj->id, array(
-                                'key' => "thesslstore_fqdn",
-                                'value' => $order->CommonName,
-                                'encrypted' => 0
-                            ));
-                        }
-                    } else {
-                        //add
-                        $this->Services->addField($service_obj->id, array(
-                            'key' => "thesslstore_fqdn",
-                            'value' => $order->CommonName,
-                            'encrypted' => 0
-                        ));
-                    }
-                }
-                break;
-            }
         }
     }
 
@@ -382,7 +290,8 @@ class ThesslstorePlugin extends Plugin
             if (!$task_id) {
                 $cron_task = $this->CronTasks->getByKey(
                     $task['key'],
-                    $task['plugin_dir']
+                    $task['dir'],
+                    $task['task_type']
                 );
                 if ($cron_task) {
                     $task_id = $cron_task->id;
@@ -410,57 +319,17 @@ class ThesslstorePlugin extends Plugin
     private function getCronTasks()
     {
         return array(
-            // Cron task to check for incoming email tickets
-            array(
-                'key' => 'tss_order_sync',
-                'plugin_dir' => 'thesslstore',
-                'name' => Language::_(
-                    'TheSSLStorePlugin.getCronTasks.tss_order_sync_name',
-                    true
-                ),
-                'description' => Language::_(
-                    'TheSSLStorePlugin.getCronTasks.tss_order_sync_desc',
-                    true
-                ),
-                'type' => 'time',
-                'type_value' =>'00:00:00' ,
-                'enabled' => 1
-            ),
             array(
                 'key' => 'tss_expiration_reminder',
-                'plugin_dir' => 'thesslstore',
-                'name' => Language::_(
-                    'TheSSLStorePlugin.getCronTasks.tss_expiration_reminder_name',
-                    true
-                ),
-                'description' => Language::_(
-                    'TheSSLStorePlugin.getCronTasks.tss_expiration_reminder_desc',
-                    true
-                ),
+                'dir' => 'thesslstore',
+                'task_type' => 'plugin',
+                'name' => Language::_('TheSSLStorePlugin.getCronTasks.tss_expiration_reminder_name', true),
+                'description' => Language::_('TheSSLStorePlugin.getCronTasks.tss_expiration_reminder_desc', true),
                 'type' => 'time',
                 'type_value' => '00:00:00',
                 'enabled' => 1
             )
         );
-    }
-    /**
-     * Converts numerically indexed service field arrays into an object with member variables
-     *
-     * @param array $fields A numerically indexed array of stdClass objects containing key and value member variables,
-     *  or an array containing 'key' and 'value' indexes
-     * @return stdClass A stdClass objects with member variables
-     */
-    private function serviceFieldsToObject(array $fields)
-    {
-        $data = new stdClass();
-        foreach ($fields as $field) {
-            if (is_array($field))
-                $data->{$field['key']} = $field['value'];
-            else
-                $data->{$field->key} = $field->value;
-        }
-
-        return $data;
     }
 
     /**
