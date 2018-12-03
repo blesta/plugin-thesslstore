@@ -138,22 +138,10 @@ class ThesslstorePlugin extends Plugin
     {
         Loader::loadModels($this, ['CronTasks']);
 
-        $cron_tasks = $this->getCronTasks();
-
         // Remove the cron task
-        foreach ($cron_tasks as $task) {
-            $cron_task = $this->CronTasks->getByKey('tss_order_sync', 'thesslstore', 'plugin');
-            if ($cron_task) {
-                $this->CronTasks->deleteTask($cron_task->id, 'plugin', 'thesslstore');
-            }
-        }
-
-        // Remove individual cron task run
-        foreach ($cron_tasks as $task) {
-            $cron_task_run = $this->CronTasks->getTaskRunByKey('tss_order_sync', 'thesslstore', false, 'plugin');
-            if ($cron_task_run) {
-                $this->CronTasks->deleteTaskRun($cron_task_run->task_run_id);
-            }
+        $cron_task = $this->CronTasks->getByKey('tss_order_sync', 'thesslstore', 'plugin');
+        if ($cron_task) {
+            $this->CronTasks->deleteTask($cron_task->id, 'plugin', 'thesslstore');
         }
     }
 
